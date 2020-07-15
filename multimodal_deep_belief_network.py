@@ -24,7 +24,7 @@ class multimod_dbn():
     def __init__(self, name, number_of_modalities):
         """
         Description:
-            The function to call to create the muldimodal dbn object
+            The method to call to create the muldimodal dbn object
         Explanation:
             The multimodal DBN is holding an OrderedDict for each modality, OrderedDict of which items are the RBM composing each modality.
             A joint-layer, if present, is not in an OrderedDict.
