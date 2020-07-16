@@ -46,8 +46,16 @@ class conv_rbm(nn.Module):
             'weights_m' : nn.Parameter(torch.zeros(f_number, self.v_channels, f_height,f_width))
         }
 
-    ################################## GPU related functions ##################################
+    ################################## GPU and initialisation methods ##################################
     def to_device(self, device):
+        '''
+        Description:
+            The method that is called when moving the network accross devices.
+        Explanation:
+            The method .to(device) is called for each parameter of the layer.
+        Arguments:
+            int device : the device to which the network is moved to.
+        '''
         self.device = device
         self.parameters['h_bias']   = self.parameters['h_bias'].to(device)
         self.parameters['h_bias_m'] = self.parameters['h_bias_m'].to(device)
@@ -57,6 +65,14 @@ class conv_rbm(nn.Module):
         self.parameters['v_bias_m']  = self.parameters['v_bias_m'].to(device)
 
     def initialisation(self,model):
+        '''
+        Description:
+            The method that is called when restoring the parameters from a saved file.
+        Explanation:
+            The default parameters dictionnary's values are being replaced by the corresponding model parameters.
+        Arguments:
+            pytorch .statedict() model : the state dictionnary of which values have to be restored.
+        '''
         self.parameters['h_bias']   = nn.Parameter(model['h_bias'])
         self.parameters['h_bias_m'] = nn.Parameter(model['h_bias_m'])
         self.parameters['weights'] = nn.Parameter(model['weights'])
@@ -64,26 +80,69 @@ class conv_rbm(nn.Module):
         self.parameters['weights_m'] = nn.Parameter(model['weights_m'])
         self.parameters['v_bias_m']  = nn.Parameter(model['v_bias_m'])
 
+    ################################## proablitiy of activation of the states methods ##################################
+
     def get_hidden_probability(self, v):
+        '''
+        Description:
+            The method to call to compute the propability of activation of hidden units given visible units's states.
+        Explanation:
+            The hidden units are considered to be binary, hence the probability of activation is given by sigmoid(input)
+        Arguments:
+            list of tensors v : the list of tensors is what the joint layer processes. Hence, we want to use only lists.
+                It is relevant to mention that the list of inputs will have a size different to one only when the joint layer is involved.
+        '''
         v = v[0]
         p_h = F.sigmoid(F.conv2d(v, self.parameters['weights'], self.parameters['h_bias'], stride = self.c_factor))
         return  [p_h]
 
     def get_visible_probability(self, h):
+        '''
+        Description:
+            The method to call to compute the probability of activation of the visible units given hidden units's states.
+        Explanation:
+            If the visible units are binary, the probability of activation is given by sigmoid(input).
+            Should they be gaussian, we consider the probability of activation the input alone.
+        Arguments:
+            tensor h : the tensor of the hidden states.
+                It is not a list of tensors (contrary to the argument of get_hidden_probability) as we are never, in this implementation, facing the case of multiple hidden layer for one visible one.
+        '''
         input_visible = F.conv_transpose2d(h, self.parameters['weights'], bias = self.parameters['v_bias'], stride = self.c_factor)
         if self.gaussian_units:
-            p_v = torch.normal(input_visible,1)
+            p_v = input_visible
         else:
             p_v = torch.sigmoid(input_visible)
         return [p_v]
 
+    ################################## Compuation of the states methods ##################################
+
     def get_hidden_states(self, v):
+        '''
+        Description:
+            The method to call to compute the states of the hidden units given visible unit's states.
+        Explanation:
+            The hidden units are considered to be binary, hence the state of the units is sampled from sigmoid(input)
+        Arguments:
+            list of tensors v : the list of tensors is what the joint layer processes. Hence, we want to use only lists.
+                It is relevant to mention that the list of inputs will have a size different to one only when the joint layer is involved.
+        '''
         v = v[0]
         p_h = F.sigmoid(F.conv2d(v, self.parameters['weights'], self.parameters['h_bias'], stride = self.c_factor))
         h = torch.bernoulli(p_h)
         return [h]
 
     def get_visible_states(self, h):
+        '''
+        Description:
+            The method to call to compute the states of the visible units given hidden units's states.
+        Explanation:
+            If the visible units are binary, the probability of activation is given by sigmoid(input).
+                The state of the unit is then sampled from the sigmoid distribution.
+            Should they be gaussian, we consider the probability of activation the input alone.
+                The state of the unit is then sampled from a normal distribution of which mean is the input and variance 1.
+        Arguments:
+            tensor h : the tensor of the hidden states.
+        '''
         input_visible = F.conv_transpose2d(h, self.parameters['weights'], bias = self.parameters['v_bias'], stride = self.c_factor)
         if self.gaussian_units:
             v = torch.normal(input_visible,1)
@@ -92,44 +151,86 @@ class conv_rbm(nn.Module):
             v = torch.bernoulli(p_v)
         return [v]
 
+    ################################## Computation of energy method ##################################
+
     def compute_energy(self, input_data, output_data, hidden_states, batch_size):
+        '''
+        Description:
+            The method to call to compute the energy difference of the RBM in the state set by the input data (positive phase) and the state set by the data sampled from the RBM (negative phase).
+            This energy does not drive the learning, it is only a training observable.
+        Explanation:
+            Computes the difference of the hidden, visible and joint energy terms for both the positive and negative phases.
+        Arguments:
+            list of tensors input_data : list of visible input data (positive phase)
+            list of tensors output_data : list of visible output data (negative phase)
+            dictionnary hidden_states : dictionary holding the hidden states given by the visible input data at the key 'h0' and the hidden states that set the visible output data at key 'hk'
+            int batch_size : the size of the batch that is currently processed
+        '''
         # detection bias energy term
-        detection = torch.sum(hidden_states['h0']-hidden_states['hk'],(0,2,3))*self.parameters['h_bias']
+        hidden_term = torch.sum(hidden_states['h0']-hidden_states['hk'],(0,2,3))*self.parameters['h_bias']
         # joint visible detection energy
-        visible_detection = F.conv2d(input_data[0], self.parameters['weights'], stride = self.c_factor)*hidden_states['h0'] - F.conv2d(output_data[0], self.parameters['weights'], stride = self.c_factor)*hidden_states['hk']
+        joint_term = F.conv2d(input_data[0], self.parameters['weights'], stride = self.c_factor)*hidden_states['h0'] - F.conv2d(output_data[0], self.parameters['weights'], stride = self.c_factor)*hidden_states['hk']
         # visible bias energy term
         if self.gaussian_units:
-            visible = (pow(torch.sum(input_data[0],(0,2,3))-self.parameters['v_bias'],2) - pow(torch.sum(output_data[0],(0,2,3))-self.parameters['v_bias'],2))/2
+            visible_term = (pow(torch.sum(input_data[0],(0,2,3))-self.parameters['v_bias'],2) - pow(torch.sum(output_data[0],(0,2,3))-self.parameters['v_bias'],2))/2
         else:
-            visible = torch.sum(input_data[0]-output_data[0],(0,2,3))*self.parameters['v_bias']
+            visible_term = torch.sum(input_data[0]-output_data[0],(0,2,3))*self.parameters['v_bias']
 
-        return (-(visible.sum() + detection.sum()  + visible_detection.sum() )/batch_size).to('cpu')
+        return (-(visible_term.sum() + hidden_term.sum()  + joint_term.sum() )/batch_size).to('cpu')
 
-    ################################## CD (Gibbs sampling + update) functions ##################################
+    ################################## Gradients computation methods ##################################
+
     def get_weight_gradient(self, hidden_vector, visible_vector, batch_size):
+        '''
+        Description:
+            The method to call to compute the weight gradient, that is called when updating the layer's parameters.
+        Explanation:
+            Computes <vh> for either the positive or negative states
+        Arguments:
+            tensor hidden_vector : the tensor of the hidden states of a given phase (positive or negative)
+            tensor visible_vector : the tensor of the visible states of a given phase (positive or negative)
+            int batch_size : the size of the batch that is currently processed
+        '''
         return torch.transpose(F.conv2d(torch.transpose(visible_vector,1,0), torch.transpose(hidden_vector,1,0), dilation = self.c_factor),1,0).sum(0)/batch_size
 
-    def get_v_bias_gradient(self, vector_0, vector_k, batch_size):
-        return torch.add(vector_0, -vector_k).sum([0,2,3])/(batch_size*self.visible_units[1]*self.visible_units[2])
+    def get_v_bias_gradient(self, visible_0, visible_k, batch_size):
+        '''
+        Description:
+            The method to call to compute the visible bias gradient, that is called when updating the layer's parameters.
+        Explanation:
+            Computes the difference <v0>-<vk> for visible bias update
+        Arguments:
+            tensor visible_0 : the tensor of the visible states of the RBM corresponding to the input data (0 steps of Gibbs sampling ran)
+            tensor visible_k : the tensor of the visible states of the RBM after running k steps of Gibbs sampling.
+            int batch_size : the size of the batch that is currently processed
+        '''
+        return torch.add(visible_0, -visible_k).sum([0,2,3])/(batch_size*self.visible_units[1]*self.visible_units[2])
 
-    def get_h_bias_gradient(self,  vector_0, vector_k, batch_size):
+    def get_h_bias_gradient(self,  hidden_0, hidden_k, batch_size):
+        '''
+        Description:
+            The method to call to compute the hidden bias gradient, that is called when updating the layer's parameters.
+        Explanation:
+            Computes the difference <h0>-<hk> for hidden bias update
+        Arguments:
+            tensor hidden_0 : the tensor of the hidden states of the RBM corresponding to the input data (0 steps of Gibbs sampling ran)
+            tensor hidden_k : the tensor of the hidden states of the RBM after running k steps of Gibbs sampling.
+            int batch_size : the size of the batch that is currently processed
+        '''
         return torch.add(vector_0, -vector_k).sum([0,2,3])/(batch_size*self.hidden_units[1]*self.hidden_units[2])
 
-    ################################## DBN related functions ##################################
-    def bottom_top(self, input_data):
-        #[h] = self.get_hidden_states(input_data)
-        [p_h] = self.get_hidden_probability(input_data)
-        p_h = (p_h-p_h.mean())/p_h.std()
-        return p_h
+    ################################## Sampling method #################################
 
-    def top_bottom(self, h):
-        #v = self.get_visible_states(h)[0]
-        v = F.conv_transpose2d(h, self.parameters['weights'], bias = self.parameters['v_bias'], stride = self.c_factor)
-        #v = torch.sigmoid(v)
-        return v
-
-    ################################## Sampling functions #################################
     def gibbs_sampling(self, input_modalities, k):
+        '''
+        Description:
+            The method to call to get the state of the RBM after k steps of Gibbs sampling ( for the update rule that uses the CD_k algorithm)
+        Explanation:
+            Iterates trhough a loop of length k to determine the states of visible and hidden units.
+        Arguments:
+            list of tensor input_modalities : the list of the tensors of the different modalities.
+            int k : the length of the chain
+        '''
         [h0] = self.get_hidden_states(input_modalities)
         hk = h0
         for _ in range(k):
@@ -138,7 +239,27 @@ class conv_rbm(nn.Module):
         hidden_states ={'h0':h0,'hk':hk}
         return modalities_k, hidden_states
 
-    def update_parameters(self, lr, momentum, weight_decay, input_data, output_data, hidden_states, batch_size):
+    ################################## Update method #################################
+
+    def update_parameters(self, learning_rate, momentum, weight_decay, input_data, output_data, hidden_states, batch_size):
+        '''
+        Description:
+            The method to call when updating the parameters of the given layer.
+        Explanation:
+        For each parameter of the layer, the gradient is computed. Then the momentum, and finally the update term is added to each corresponding parameter.
+            According of the update rule of RBM:
+                the gradient for the weights is <v0h0>-<vkhk>
+                the gradient for the visible bias is <v0>-<vk>
+                the gradient for the hidden  bias is <h0>-<hk>
+        Arguments:
+            float learning_rate: the learning rate of the training
+            float momentum: the momentum of the training
+            float weight_decay: the weight decay of the training
+            list of tensors input_data : list of visible input data
+            list of tensors output_data : list of visible output data
+            dictionnary hidden_states : dictionary holding the hidden states given by the visible input data at the key 'h0' and the hidden states that set the visible output data at key 'hk'
+            int batch_size : the size of the batch that is currently processed
+        '''
         d_v = self.get_v_bias_gradient(input_data[0],output_data[0], batch_size)
         d_h = self.get_h_bias_gradient(hidden_states['h0'], hidden_states['hk'], batch_size)
         dw_in  = self.get_weight_gradient(hidden_states['h0'], input_data[0], batch_size)
@@ -146,7 +267,36 @@ class conv_rbm(nn.Module):
         d_w  = torch.add(dw_in,-dw_out)
         self.parameters['weights_m'] = torch.add(momentum* self.parameters['weights_m'], d_w)
         self.parameters['v_bias_m']  = torch.add(momentum* self.parameters['v_bias_m'], d_v)
-        self.parameters['weights']  += lr*(torch.add(d_w, self.parameters['weights_m']))+weight_decay*self.parameters['weights']
-        self.parameters['v_bias']   += lr*torch.add(d_v, self.parameters['v_bias_m'])
+        self.parameters['weights']  += learning_rate*(torch.add(d_w, self.parameters['weights_m']))+weight_decay*self.parameters['weights']
+        self.parameters['v_bias']   += learning_rate*torch.add(d_v, self.parameters['v_bias_m'])
         self.parameters['h_bias_m']  = torch.add(momentum*self.parameters['h_bias_m'], d_h)
-        self.parameters['h_bias']   += lr*torch.add(d_h,  self.parameters['h_bias_m'])
+        self.parameters['h_bias']   += learning_rate*torch.add(d_h,  self.parameters['h_bias_m'])
+
+    ##################################  Inference methods  ##################################
+
+    def bottom_top(self, visible_data):
+        '''
+        Description:
+            The method to call to infer data to the upper layer.
+        Explanation:
+            We train the layer n+1 by using the hidden posteriors of the layer n.
+            Each layer having gaussian visible states, it is necessary after computing the posteriors to renormalize them so that they have 0 mean and 1 variance.
+            This is done to comply with the assumption made on the visible states.
+        Arguments:
+            list of tensors input_data : list of visible input data
+        '''
+        [p_h] = self.get_hidden_probability(visible_data)
+        p_h = (p_h-p_h.mean())/p_h.std()
+        return p_h
+
+    def top_bottom(self, hidden_data):
+        '''
+        Description:
+            The method to call to infer data to the lower layer.
+        Explanation:
+            To infer the visible data during the top_bottom pass (top being the more compressed state that the data will be in the network), we do as if
+        Arguments:
+            list of tensors input_data : list of visible input data
+        '''
+        v = self.get_visible_probability(hidden_data)
+        return v[0]

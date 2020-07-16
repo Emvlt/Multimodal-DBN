@@ -5,8 +5,6 @@
 Implementation of https://icml.cc/2011/papers/399_icmlpaper.pdf by Emilien Valat
 """
 
-
-
 import torch
 import time
 import convolutionnal_rbm as conv_rbm
@@ -41,6 +39,8 @@ class multimod_dbn():
             self.modalities[str(modality)] = OrderedDict()
         self.joint_layer= False
 
+    ################################## Layer management method ##################################
+
     def add_layer(self, name, type, gaussian_units, visible_units, **kwargs):
         """
         Description:
@@ -73,6 +73,8 @@ class multimod_dbn():
                                         kwargs['f_height'], kwargs['f_width'], kwargs['f_number'], kwargs['c_factor'])
             self.modalities[str(kwargs['modality'])][name] = rbm
 
+    ################################## Save method ##################################
+
     def save_network(self, save_path):
         """
         Description:
@@ -92,6 +94,8 @@ class multimod_dbn():
         if self.joint_layer:
             torch.save(self.joint_layer.parameters, save_path+self.joint_layer.name)
 
+    ################################## CPU/GPU related methods ##################################
+
     def move_network_to_device(self, device):
         """
         Description:
@@ -108,6 +112,8 @@ class multimod_dbn():
 
         if self.joint_layer:
             self.joint_layer.to_device(device)
+
+    ################################## initialisation method ##################################
 
     def initialise_layer(self, layer_name, load_path, **kwargs):
         """
@@ -128,6 +134,7 @@ class multimod_dbn():
             layer = self.joint_layer
         layer.initialisation(model)
 
+    ################################## Input getting methods ##################################
 
     def get_input_layer(self, layer_name, modality, input_data):
         """
@@ -167,6 +174,8 @@ class multimod_dbn():
             else:
                 input_data.append(inputs[modality])
         return input_data
+
+    ################################## Train methods ##################################
 
     def train_layer(self, layer_name, dataloader, data_names, run_name, save_path, epochs, CD_k, learning_rate, momentum, weight_decay, **kwargs):
         """
@@ -252,6 +261,8 @@ class multimod_dbn():
         layer.update_parameters( learning_rate, momentum, weight_decay, input_data, output_data, hidden_states, batch_size)
         observable_dict = {'Energy':joint_energy}
         return observable_dict
+
+    ################################## Inference methods ##################################
 
     def top_bottom(self, inputs):
         """
