@@ -8,7 +8,7 @@ from torch import nn
 import torch.nn.functional as F
 
 class conv_rbm(nn.Module):
-    def __init__(self, name, gaussian_units, visible_units, f_height, f_width, f_number, c_factor):
+    def __init__(self, name, gaussian_units, visible_units, filters_properties):
         '''
         Description:
             The method to call to create the convolutional RBM object.
@@ -18,32 +18,27 @@ class conv_rbm(nn.Module):
             string name : the name of the rbm
             bool gaussian_units : boolean to determine the type of the visible units
             list visible_units  : list of integers representing the size of the visible layer accross each dimension
-            int f_height : filter's height
-            int f_width  : filter's width
-            int f_number : number of filters
-            int c_factor : pooling factor
+            dictionary filters_properties : dictionary with the filter's properties
         '''
         super(conv_rbm, self).__init__()
         self.name            = name
         self.visible_units   = visible_units
         self.v_channels      = visible_units[0]
-        self.f_height        = f_height
-        self.f_width         = f_width
-        self.f_number        = f_number
-        self.c_factor        = c_factor
-        n_size = int((visible_units[1]-f_height)/c_factor +1)
-        self.hidden_units    = [f_number, n_size, n_size]
+        self.filters_parameters = filters_properties
+        height = int((visible_units[1]-filters_properties['f_height'])/filters_properties['stride'] +1)
+        width  = int((visible_units[2]-filters_properties['f_width']) /filters_properties['stride'] +1)
+        self.hidden_units    = [filters_properties['f_number'], height, width]
         self.gaussian_units  = gaussian_units
         self.n_modalities    = 1
         self.type = 'convolutional'
         self.device = 'cpu'
         self.parameters   = {
-            'h_bias'   : nn.Parameter((torch.ones(f_number)*-4)),
-            'h_bias_m' : nn.Parameter(torch.zeros(f_number)),
+            'h_bias'   : nn.Parameter((torch.ones(filters_properties['f_number'])*-4)),
+            'h_bias_m' : nn.Parameter(torch.zeros(filters_properties['f_number'])),
             'v_bias'  : nn.Parameter((torch.ones(self.v_channels)*0.01)),
-            'weights' : nn.Parameter((torch.randn(f_number, self.v_channels, f_height, f_width )*0.01)),
+            'weights' : nn.Parameter((torch.randn(filters_properties['f_number'], self.v_channels, filters_properties['f_height'], filters_properties['f_width'])*0.01)),
             'v_bias_m'  : nn.Parameter(torch.zeros(self.v_channels)),
-            'weights_m' : nn.Parameter(torch.zeros(f_number, self.v_channels, f_height,f_width))
+            'weights_m' : nn.Parameter(torch.zeros(filtesr_properties['f_number'], self.v_channels, filters_properties['f_height'], filters_properties['f_width']))
         }
 
     ################################## GPU and initialisation methods ##################################
@@ -93,7 +88,7 @@ class conv_rbm(nn.Module):
                 It is relevant to mention that the list of inputs will have a size different to one only when the joint layer is involved.
         '''
         v = v[0]
-        p_h = F.sigmoid(F.conv2d(v, self.parameters['weights'], self.parameters['h_bias'], stride = self.c_factor))
+        p_h = F.sigmoid(F.conv2d(v, self.parameters['weights'], self.parameters['h_bias'], stride = self.filters_parameters['stride']))
         return  p_h
 
     def get_visible_probability(self, h):
@@ -107,7 +102,7 @@ class conv_rbm(nn.Module):
             tensor h : the tensor of the hidden states.
                 It is not a list of tensors (contrary to the argument of get_hidden_probability) as we are never, in this implementation, facing the case of multiple hidden layer for one visible one.
         '''
-        input_visible = F.conv_transpose2d(h, self.parameters['weights'], bias = self.parameters['v_bias'], stride = self.c_factor)
+        input_visible = F.conv_transpose2d(h, self.parameters['weights'], bias = self.parameters['v_bias'], stride = self.filters_parameters['stride'])
         if self.gaussian_units:
             p_v = input_visible
         else:
@@ -165,7 +160,7 @@ class conv_rbm(nn.Module):
             int batch_size : the size of the batch that is currently processed
         '''
         hidden_term = torch.sum(hidden_states['h0']-hidden_states['hk'],(0,2,3))*self.parameters['h_bias']
-        joint_term = F.conv2d(input_data[0], self.parameters['weights'], stride = self.c_factor)*hidden_states['h0'] - F.conv2d(output_data[0], self.parameters['weights'], stride = self.c_factor)*hidden_states['hk']
+        joint_term = F.conv2d(input_data[0], self.parameters['weights'], stride = self.filters_parameters['stride'])*hidden_states['h0'] - F.conv2d(output_data[0], self.parameters['weights'], stride = self.filters_parameters['stride'])*hidden_states['hk']
         if self.gaussian_units:
             visible_term = (pow(torch.sum(input_data[0],(0,2,3))-self.parameters['v_bias'],2) - pow(torch.sum(output_data[0],(0,2,3))-self.parameters['v_bias'],2))/2
         else:
@@ -184,7 +179,7 @@ class conv_rbm(nn.Module):
             tensor hidden_vector : the tensor of the hidden states of a given phase (positive or negative)
             tensor visible_vector : the tensor of the visible states of a given phase (positive or negative)
         '''
-        return torch.transpose(F.conv2d(torch.transpose(visible_vector,1,0), torch.transpose(hidden_vector,1,0), dilation = self.c_factor),1,0).sum(0)
+        return torch.transpose(F.conv2d(torch.transpose(visible_vector,1,0), torch.transpose(hidden_vector,1,0), dilation = self.filters_parameters['stride']),1,0).sum(0)
 
     def get_bias_gradient(self, vector_0, vector_k):
         '''

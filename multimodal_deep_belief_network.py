@@ -53,25 +53,28 @@ class multimod_dbn():
             bool gaussian_units : bool to specify the type of the visible units of the RBM to be added to the modality
             list visible_units  : list representing the size in each dimension of the visible units  of the RBM to be added to the modality
         kwargs:
-            list "filter_properties" : list of ints of size 4 [f_height, f_width, f_number, stride_value]
+            list "filters_properties" : list of ints of size 4 [f_height, f_width, f_number, stride_value]
             list "hidden_units" : list of ints giving the expected hidden layer size
-        TODO :
-            add check if name already exists in the modality
-            replace c_factor name by stride value
-            add padding argument to convolutional layers
-            replace kwargs['f_height'], kwargs['f_width'], kwargs['f_number'], kwargs['pooling_factor'] by kwargs['filter_properties']
+        Comment :
+            The layers are meant to be added in order
         """
-        if type=='joint':
-            rbm = joint_rbm.joint_rbm(name, gaussian_units, visible_units, kwargs['filter_properties'], kwargs['hidden_units'])
+        if type=='joint_convolutional':
+            rbm = joint_rbm.joint_rbm(name, 'convolutional', gaussian_units, visible_units, kwargs['filters_properties'])
+            self.joint_layer = rbm
+        elif type=='joint_fully_connected':
+            rbm = joint_rbm.joint_rbm(name, 'fully_connected', gaussian_units, visible_units, kwargs['hidden_units'])
             self.joint_layer = rbm
         else:
-            if type=='fully_connected':
-                rbm = fc_rbm.fc_rbm(name, gaussian_units,visible_units, kwargs['hidden_units'])
+            if name in self.[str(kwargs['modality'])]:
+                raise Exception("The name is already taken")
+            else:
+                if type=='fully_connected':
+                    rbm = fc_rbm.fc_rbm(name, gaussian_units,visible_units, kwargs['hidden_units'])
 
-            elif type=='convolutional':
-                rbm = conv_rbm.conv_rbm(name,gaussian_units, visible_units,
-                                        kwargs['f_height'], kwargs['f_width'], kwargs['f_number'], kwargs['c_factor'])
-            self.modalities[str(kwargs['modality'])][name] = rbm
+                elif type=='convolutional':
+                    rbm = conv_rbm.conv_rbm(name,gaussian_units, visible_units,
+                                            kwargs['filters_properties'])
+                self.modalities[str(kwargs['modality'])][name] = rbm
 
     ################################## Save method ##################################
 
@@ -84,12 +87,10 @@ class multimod_dbn():
             Each layer will be saved to the
         Arguments:
             string save_path : the path of the existing folder to save the network in
-        TODO:
-            add modality label to the save_path
         """
-        for modality in self.modalities.values():
+        for modality_name, modality in self.modalities.items():
             for layer_name, layer in modality.items():
-                torch.save(layer.parameters, save_path+layer_name)
+                torch.save(layer.parameters, save_path+'modality_'+modality_name+'_'+layer_name)
 
         if self.joint_layer:
             torch.save(self.joint_layer.parameters, save_path+self.joint_layer.name)
@@ -275,12 +276,12 @@ class multimod_dbn():
         """
         outputs = inputs
         batch_size = inputs[0].size()[0]
-        for modality_name in range(len(self.modalities)):
-            for key, value in reversed(self.modalities[str(modality_name)].items()):
-                cast_size = self.modalities[str(modality_name)][key].hidden_units.copy()
+        for modality_index in range(len(self.modalities)):
+            for key, value in reversed(self.modalities[str(modality_index)].items()):
+                cast_size = self.modalities[str(modality_index)][key].hidden_units.copy()
                 cast_size.insert(0, batch_size)
-                outputs[modality_name] = outputs[modality_name].view(tuple(cast_size))
-                outputs[modality_name] = value.top_bottom(outputs[modality_name])
+                outputs[modality_index] = outputs[modality_index].view(tuple(cast_size))
+                outputs[modality_index] = value.top_bottom(outputs[modality_index])
         return outputs
 
 
@@ -292,11 +293,14 @@ class multimod_dbn():
             Calls the function get_input_joint_layer and samples the top layers, to then propagate it back calling the method top_bottom.
         Arguments:
             list of tensors inputs : list of tensors of the input data for each modality
-        TODO:
-            add top_bottom call to each modality if there is no joint layer
         """
         inputs = self.get_input_joint_layer(inputs)
         if self.joint_layer:
-            inputs = self.joint_layer.gibbs_sampling_( inputs, 1)
-        outputs= self.top_bottom(inputs)
+            new_inputs, _ = self.joint_layer.gibbs_sampling( inputs, 1)
+        else:
+            new_inputs = []
+            for modality_index in range(len(self.modalities)):
+                inp, _ = next(reversed(self.modalities[str(modality_index)])).gibbs_sampling([inputs[modality_index]], 1)
+                new_inputs.append(inp)
+        outputs= self.top_bottom(new_inputs)
         return outputs
