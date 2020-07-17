@@ -102,7 +102,7 @@ class conv_rbm(nn.Module):
             The method to call to compute the probability of activation of the visible units given hidden units's states.
         Explanation:
             If the visible units are binary, the probability of activation is given by sigmoid(input).
-            Should they be gaussian, we consider the probability of activation the input alone.
+            If they are gaussian, we consider the probability of activation the input alone.
         Arguments:
             tensor h : the tensor of the hidden states.
                 It is not a list of tensors (contrary to the argument of get_hidden_probability) as we are never, in this implementation, facing the case of multiple hidden layer for one visible one.
@@ -126,7 +126,6 @@ class conv_rbm(nn.Module):
             list of tensors v : the list of tensors is what the joint layer processes. Hence, we want to use only lists.
                 It is relevant to mention that the list of inputs will have a size different to one only when the joint layer is involved.
         '''
-
         p_h = self.get_hidden_probability(v)
         h = torch.bernoulli(p_h)
         return h
@@ -240,17 +239,18 @@ class conv_rbm(nn.Module):
             dictionnary hidden_states : dictionary holding the hidden states given by the visible input data at the key 'h0' and the hidden states that set the visible output data at key 'hk'
             int batch_size : the size of the batch that is currently processed
         '''
-        d_v = self.get_bias_gradient(input_data[0],output_data[0])/batch_size
-        d_h = self.get_bias_gradient(hidden_states['h0'], hidden_states['hk'])/batch_size
-        dw_in  = self.get_weight_gradient(hidden_states['h0'], input_data[0])
-        dw_out = self.get_weight_gradient(hidden_states['hk'], output_data[0])
-        d_w  = torch.add(dw_in,-dw_out)/batch_size
-        self.parameters['weights_m'] = torch.add(momentum* self.parameters['weights_m'], d_w)
-        self.parameters['v_bias_m']  = torch.add(momentum* self.parameters['v_bias_m'], d_v)
-        self.parameters['weights']  += learning_rate*(torch.add(d_w, self.parameters['weights_m']))+weight_decay*self.parameters['weights']
-        self.parameters['v_bias']   += learning_rate*torch.add(d_v, self.parameters['v_bias_m'])
-        self.parameters['h_bias_m']  = torch.add(momentum*self.parameters['h_bias_m'], d_h)
-        self.parameters['h_bias']   += learning_rate*torch.add(d_h,  self.parameters['h_bias_m'])
+        with torch.no_grad():
+            d_v = self.get_bias_gradient(input_data[0],output_data[0])/batch_size
+            d_h = self.get_bias_gradient(hidden_states['h0'], hidden_states['hk'])/batch_size
+            dw_in  = self.get_weight_gradient(hidden_states['h0'], input_data[0])
+            dw_out = self.get_weight_gradient(hidden_states['hk'], output_data[0])
+            d_w  = torch.add(dw_in,-dw_out)/batch_size
+            self.parameters['weights_m'] = torch.add(momentum* self.parameters['weights_m'], d_w)
+            self.parameters['v_bias_m']  = torch.add(momentum* self.parameters['v_bias_m'], d_v)
+            self.parameters['weights']  += learning_rate*(torch.add(d_w, self.parameters['weights_m']))+weight_decay*self.parameters['weights']
+            self.parameters['v_bias']   += learning_rate*torch.add(d_v, self.parameters['v_bias_m'])
+            self.parameters['h_bias_m']  = torch.add(momentum*self.parameters['h_bias_m'], d_h)
+            self.parameters['h_bias']   += learning_rate*torch.add(d_h,  self.parameters['h_bias_m'])
 
     ##################################  Inference methods  ##################################
 
