@@ -7,8 +7,8 @@ Implementation of https://icml.cc/2011/papers/399_icmlpaper.pdf by Emilien Valat
 
 import torch
 import time
-import convolutionnal_rbm as conv_rbm
-import fc_rbm as fc_rbm
+import convolutional_rbm as conv_rbm
+import fully_connected_rbm as fc_rbm
 import joint_rbm as joint_rbm
 from collections import OrderedDict
 from torch.utils.tensorboard import SummaryWriter
@@ -28,11 +28,9 @@ class multimod_dbn():
             A joint-layer, if present, is not in an OrderedDict.
             It is created in the CPU but can be moved to the GPU
         Arguments :
-            string name : the name of the DBN
             int modalities : the number of modalities
         """
         super(multimod_dbn, self).__init__()
-        self.name   = name
         self.modalities = {}
         self.device = 'cpu'
         for modality in range(number_of_modalities):
@@ -41,7 +39,7 @@ class multimod_dbn():
 
     ################################## Layer management method ##################################
 
-    def add_layer(self, name, type, gaussian_units, visible_units, **kwargs):
+    def add_layer(self, name, type_of_layer, gaussian_units, visible_units, **kwargs):
         """
         Description:
             The method to call when adding a layer.
@@ -53,25 +51,25 @@ class multimod_dbn():
             bool gaussian_units : bool to specify the type of the visible units of the RBM to be added to the modality
             list visible_units  : list representing the size in each dimension of the visible units  of the RBM to be added to the modality
         kwargs:
-            list "filters_properties" : list of ints of size 4 [f_height, f_width, f_number, stride_value]
+            list "filters_properties" : 
             list "hidden_units" : list of ints giving the expected hidden layer size
         Comment :
             The layers are meant to be added in order
         """
-        if type=='joint_convolutional':
-            rbm = joint_rbm.joint_rbm(name, 'convolutional', gaussian_units, visible_units, kwargs['filters_properties'])
+        if type_of_layer=='joint_convolutional':
+            rbm = joint_rbm.joint_rbm(name=name, type_of_layer='convolutional', gaussian_units=gaussian_units, visible_units=visible_units, filters_properties=kwargs['filters_properties'])
             self.joint_layer = rbm
-        elif type=='joint_fully_connected':
-            rbm = joint_rbm.joint_rbm(name, 'fully_connected', gaussian_units, visible_units, kwargs['hidden_units'])
+        elif type_of_layer=='joint_fully_connected':
+            rbm = joint_rbm.joint_rbm(name=name, type_of_layer='fully_connected', gaussian_units=gaussian_units, visible_units=visible_units, hidden_units=kwargs['hidden_units'])
             self.joint_layer = rbm
         else:
-            if name in self.[str(kwargs['modality'])]:
+            if name in self.modalities[str(kwargs['modality'])]:
                 raise Exception("The name is already taken")
             else:
-                if type=='fully_connected':
+                if type_of_layer=='fully_connected':
                     rbm = fc_rbm.fc_rbm(name, gaussian_units,visible_units, kwargs['hidden_units'])
 
-                elif type=='convolutional':
+                elif type_of_layer=='convolutional':
                     rbm = conv_rbm.conv_rbm(name,gaussian_units, visible_units,
                                             kwargs['filters_properties'])
                 self.modalities[str(kwargs['modality'])][name] = rbm
@@ -150,12 +148,12 @@ class multimod_dbn():
         """
         output_data = input_data
         for key, value in self.modalities[str(modality)].items():
+            cast_size = self.modalities[str(modality)][key].visible_units.copy()
+            cast_size.insert(0, output_data.size()[0])
             if key == layer_name:
-                cast_size = self.modalities[str(modality)][key].visible_units.copy()
-                cast_size.insert(0, output_data.size()[0])
-                return [output_data.view(tuple(cast_size))]
+                return output_data.view(tuple(cast_size))
             else:
-                output_data = value.bottom_top([output_data])
+                output_data = value.bottom_top(output_data.view(tuple(cast_size)))
 
     def get_input_joint_layer(self, inputs):
         """
@@ -167,18 +165,21 @@ class multimod_dbn():
             list of tensors inputs: a list of tensors of size number_of_modalities
         """
         input_data = []
+        batch_size = inputs[0].size()[0]
         for modality in range(len(self.modalities)):
+            cast_size = self.joint_layer.visible_units[modality].copy()
+            cast_size.insert(0, batch_size)
             if self.modalities[str(modality)]:
                 last_layer_name_of_current_mod = next(reversed(self.modalities[str(modality)]))
                 input_m = self.get_input_layer(last_layer_name_of_current_mod, modality, inputs[modality])
-                input_data.append(self.modalities[str(modality)][last_layer_name_of_current_mod].bottom_top(input_m))
+                input_data.append(self.modalities[str(modality)][last_layer_name_of_current_mod].bottom_top(input_m).view(tuple(cast_size)))
             else:
-                input_data.append(inputs[modality])
+                input_data.append(inputs[modality].view(tuple(cast_size)))
         return input_data
 
     ################################## Train methods ##################################
 
-    def train_layer(self, layer_name, dataloader, data_names, run_name, save_path, epochs, CD_k, learning_rate, momentum, weight_decay, **kwargs):
+    def train_layer(self, layer_name, dataloader, data_names, run_record, save_path, epochs, CD_k, learning_rate, momentum, weight_decay, **kwargs):
         """
         Description:
             Method to call to train a layer. As the DBN implements the Greedy-Layer Wise training, the method has to be called for each layer that has to be trained.
@@ -198,32 +199,34 @@ class multimod_dbn():
         kwargs:
             int modality: modality of the layer to be trained if it is not the joint layer
         """
-        writer_step = 0
-        writer = SummaryWriter(log_dir = run_name)
+        if run_record:
+            writer_step = 0
+            writer = SummaryWriter(log_dir = kwargs['run_name'])
         training_observables = {}
         if self.joint_layer and layer_name == self.joint_layer.name:
                 layer = self.joint_layer
         else:
             layer = self.modalities[str(kwargs['modality'])][layer_name]
-
+        
+        energy_gradient = 0
+        
         for epoch in range(epochs):
             training_observables['Energy'] = 0
-            writer_step += 1
+            if run_record:
+                writer_step += 1
             number_of_batches = 0
             tic = time.time()
             for data in dataloader:
-                input_data ={}
                 if self.joint_layer and layer_name == self.joint_layer.name:
                     input_data_ = [data[data_names[i]].to(self.device).float() for i in range(len(self.modalities))]
-                    input_data_ = self.get_input_joint_layer(input_data_)
-                    for index, d_name in enumerate(data_names):
-                        input_data[d_name] = input_data_
+                    input_data = self.get_input_joint_layer(input_data_)
+            
                 else:
                     input_data_ = data[data_names[kwargs['modality']]].to(self.device).float()
-                    input_data_ = self.get_input_layer(layer_name, kwargs['modality'], input_data_)
-                    input_data[data_names[kwargs['modality']]] = input_data_
+                    input_data = self.get_input_layer(layer_name, kwargs['modality'], input_data_)
+                batch_size = data[data_names[0]].size()[0]
                 with torch.no_grad():
-                    observables_dict = self.batch_training(layer, CD_k, learning_rate, momentum, weight_decay, input_data)
+                    observables_dict = self.batch_training(layer, CD_k, learning_rate, momentum, weight_decay, input_data, batch_size)
                 for name, value in observables_dict.items():
                     training_observables[name] += value
                 number_of_batches+=1
@@ -231,12 +234,16 @@ class multimod_dbn():
             print('--------------------------------------------------------')
             print("Layer : %s, Epoch: %s, Elapsed time : %.2f" % (layer_name, epoch, tac-tic))
             for name, value in training_observables.items():
-                writer.add_scalar(name, value/number_of_batches, writer_step)
+                if run_record:
+                    writer.add_scalar(name, value/number_of_batches, writer_step)
                 print(name+' : '+str(value/number_of_batches))
+                print('Energy gradient : ', energy_gradient-(value/number_of_batches))
+                energy_gradient = (value/number_of_batches)
         torch.save(layer.parameters, save_path)
-        writer.close()
+        if run_record:
+            writer.close()
 
-    def batch_training(self, layer, CD_k, learning_rate, momentum, weight_decay, i_d):
+    def batch_training(self, layer, CD_k, learning_rate, momentum, weight_decay, input_data, batch_size):
         """
         Description:
             Method to call to update the parameters of a layer given a batch of input data
@@ -250,17 +257,13 @@ class multimod_dbn():
             float weight_decay: the weight decay of the training
             dictionnary i_d : an dictionary of which the keys are the modality names and of which the values are the input data of each modality
         """
-        input_data =[]
-        for d in i_d.values():
-            input_data.append(d[0])
-        batch_size = input_data[0].size()[0]
         # Sample layer
         output_data, hidden_states = layer.gibbs_sampling( input_data, CD_k)
         # Compute joint energy
-        joint_energy = layer.compute_energy(input_data, output_data, hidden_states, batch_size)
+        energy = layer.compute_energy(input_data, output_data, hidden_states, batch_size)
         # Update
         layer.update_parameters( learning_rate, momentum, weight_decay, input_data, output_data, hidden_states, batch_size)
-        observable_dict = {'Energy':joint_energy}
+        observable_dict = {'Energy': energy}
         return observable_dict
 
     ################################## Inference methods ##################################
@@ -296,11 +299,6 @@ class multimod_dbn():
         """
         inputs = self.get_input_joint_layer(inputs)
         if self.joint_layer:
-            new_inputs, _ = self.joint_layer.gibbs_sampling( inputs, 1)
-        else:
-            new_inputs = []
-            for modality_index in range(len(self.modalities)):
-                inp, _ = next(reversed(self.modalities[str(modality_index)])).gibbs_sampling([inputs[modality_index]], 1)
-                new_inputs.append(inp)
-        outputs= self.top_bottom(new_inputs)
+            inputs, _ = self.joint_layer.gibbs_sampling( inputs, 1)
+        outputs= self.top_bottom(inputs)
         return outputs

@@ -9,7 +9,7 @@ from collections import OrderedDict
 '''Implementation of a convolutional joint RBM, to be included in a DBN framework '''
 
 class joint_rbm(nn.Module):
-    def __init__(self, name, type, gaussian_units, visible_units, filters_properties, **kwargs):
+    def __init__(self, name, type_of_layer, gaussian_units, visible_units, **kwargs):
         '''
         Description:
             The method to call to instanciate the joint RBM object
@@ -29,15 +29,16 @@ class joint_rbm(nn.Module):
         self.gaussian_units = gaussian_units
         self.n_modalities = len(visible_units)
         self.device = 'cpu'
-
-        if type=='convolutional':
+        self.type_of_layer = type_of_layer
+        self.visible_units = visible_units
+        if type_of_layer=='convolutional':
             self.filters_parameters = kwargs['filters_properties']
             height = int((visible_units[0][1]-self.filters_parameters[0]['f_height'])/self.filters_parameters[0]['stride'] +1)
             width  = int((visible_units[0][2]-self.filters_parameters[0]['f_width']) /self.filters_parameters[0]['stride'] +1)
             self.hidden_units    = [self.filters_parameters[0]['f_number'], height, width]
             self.parameters   = {
-                'h_bias'   : nn.Parameter((torch.ones(hidden_units[0])*-4)),
-                'h_bias_m' : nn.Parameter(torch.zeros(hidden_units[0]))
+                'h_bias'   : nn.Parameter((torch.ones(self.hidden_units[0])*-4)),
+                'h_bias_m' : nn.Parameter(torch.zeros(self.hidden_units[0]))
             }
             for index in range(self.n_modalities):
                 self.parameters[str(index)] = OrderedDict()
@@ -46,18 +47,18 @@ class joint_rbm(nn.Module):
                 self.parameters[str(index)]['weights'] = nn.Parameter((torch.randn(self.filters_parameters[index]['f_number'], visible_units[index][0], self.filters_parameters[index]['f_height'], self.filters_parameters[index]['f_width'] )*0.01))
                 self.parameters[str(index)]['v_bias']  = nn.Parameter(torch.ones(visible_units[index][0])*0.01)
 
-        elif type=='fully_connected':
-            self.hidden_units = kwargs['hidden_units']
+        elif type_of_layer=='fully_connected':
+            self.hidden_units = kwargs['hidden_units'][0]
             self.parameters   = {
                 'h_bias'   : nn.Parameter((torch.ones(self.hidden_units)*-4)),
                 'h_bias_m' : nn.Parameter(torch.zeros(self.hidden_units))
             }
-            for parameter in range(self.n_modalities):
-                self.parameters[str(parameter)] = OrderedDict()
-                self.parameters[str(index)]['weights_m'] = nn.Parameter((torch.zeros(visible_units[index],self.hidden_units)))
-                self.parameters[str(index)]['v_bias_m']  = nn.Parameter(torch.zeros(visible_units[index]))
-                self.parameters[str(index)]['weights'] = nn.Parameter((torch.randn(visible_units[index],self.hidden_units))*0.01)
-                self.parameters[str(index)]['v_bias']  = nn.Parameter(torch.ones(visible_units[index])*0.01)
+            for index in range(self.n_modalities):
+                self.parameters[str(index)] = OrderedDict()
+                self.parameters[str(index)]['weights_m'] = nn.Parameter(torch.zeros((visible_units[index][0],self.hidden_units)))
+                self.parameters[str(index)]['v_bias_m']  = nn.Parameter(torch.zeros(visible_units[index][0]))
+                self.parameters[str(index)]['weights'] = nn.Parameter(torch.randn((visible_units[index][0],self.hidden_units))*0.01)
+                self.parameters[str(index)]['v_bias']  = nn.Parameter(torch.ones(visible_units[index][0])*0.01)
 
     def to_device(self, device):
         '''
@@ -105,13 +106,14 @@ class joint_rbm(nn.Module):
         Arguments:
             list of tensors modalities : the list of tensors is what the joint layer processes. Hence, we want to use only lists.
         '''
-        h_input = self.parameters['h_bias']
+        h_input = 0
         for index, modality in enumerate(modalities):
-            if self.type == 'convolutional':
-                h_input += F.conv2d(modality, self.parameters[str(index)]['weights'], bias = False)
+            if self.type_of_layer == 'convolutional':                
+                h_input += F.conv2d(modality, self.parameters[str(index)]['weights'])
+                p_h  = torch.sigmoid(h_input+self.parameters['h_bias'].repeat(modality.size()[0],1,self.hidden_units[1],self.hidden_units[2]))
             else:
                 h_input += F.linear(modality, self.parameters[str(index)]['weights'].t(), bias = False)
-        p_h  = F.sigmoid(h_input)
+                p_h  = torch.sigmoid(h_input)
         return p_h
 
     def get_visible_probability(self, h):
@@ -127,7 +129,7 @@ class joint_rbm(nn.Module):
         '''
         modalities = []
         for modality in range(self.n_modalities):
-            if self.type == 'convolutional':
+            if self.type_of_layer == 'convolutional':
                 Wh = F.conv_transpose2d(h, self.parameters[str(modality)]['weights'], bias = self.parameters[str(modality)]['v_bias'])
             else:
                 Wh = F.linear(h, self.parameters[str(modality)]['weights'],self.parameters[str(modality)]["v_bias"])
@@ -135,7 +137,7 @@ class joint_rbm(nn.Module):
                 if self.gaussian_units:
                     modalities.append(Wh)
                 else:
-                    p_v = F.sigmoid(Wh)
+                    p_v = torch.sigmoid(Wh)
                     modalities.append(p_v)
         return modalities
 
@@ -150,13 +152,14 @@ class joint_rbm(nn.Module):
         Arguments:
             list of tensors modalities : the list of tensors is what the joint layer processes. Hence, we want to use only lists.
         '''
-        h_input = self.parameters['h_bias']
+        h_input = 0
         for index, modality in enumerate(modalities):
-            if self.type == 'convolutional':
-                h_input += F.conv2d(modality, self.parameters[str(index)]['weights'], bias = False)
+            if self.type_of_layer == 'convolutional':
+                h_input += F.conv2d(modality, self.parameters[str(index)]['weights'])
+                p_h  = torch.sigmoid(h_input+self.parameters['h_bias'].unsqueeze(-1).unsqueeze(-1).expand(self.hidden_units[0],self.hidden_units[1],self.hidden_units[2]))               
             else:
-                h_input += F.linear(modality, self.parameters[str(index)]['weights'].t(), bias = False)
-        p_h  = F.sigmoid(h_input)
+                h_input += F.linear(modality, self.parameters[str(index)]['weights'].t())
+                p_h  = torch.sigmoid(h_input+self.parameters['h_bias'])
         sample_h = torch.bernoulli(p_h)
         return sample_h
 
@@ -174,16 +177,15 @@ class joint_rbm(nn.Module):
         '''
         modalities = []
         for modality in range(self.n_modalities):
-            if self.type == 'convolutional':
+            if self.type_of_layer == 'convolutional':
                 Wh = F.conv_transpose2d(h, self.parameters[str(modality)]['weights'], bias = self.parameters[str(modality)]['v_bias'])
             else:
                 Wh = F.linear(h, self.parameters[str(modality)]['weights'],self.parameters[str(modality)]["v_bias"])
             if self.gaussian_units[modality]:
-                if self.gaussian_units:
-                    sample_v = torch.normal(Wh, 1)
-                else:
-                    p_v = F.sigmoid(Wh)
-                    sample_v = torch.bernoulli(p_v)
+                sample_v = torch.normal(Wh, 1)
+            else:
+                p_v = torch.sigmoid(Wh)
+                sample_v = torch.bernoulli(p_v)
             modalities.append(sample_v)
         return modalities
 
@@ -202,7 +204,7 @@ class joint_rbm(nn.Module):
             dictionnary hidden_states : dictionary holding the hidden states given by the visible input data at the key 'h0' and the hidden states that set the visible output data at key 'hk'
             int batch_size : the size of the batch that is currently processed
         '''
-        if self.type=='convolutional':
+        if self.type_of_layer=='convolutional':
             energy = (torch.sum(hidden_states['h0']-hidden_states['hk'],(0,2,3))*self.parameters['h_bias']).sum()
             for index in range(self.n_modalities):
                 visible_detection = F.conv2d(input_data[index], self.parameters[str(index)]['weights'])*hidden_states['h0'] - F.conv2d(output_data[index], self.parameters[str(index)]['weights'])*hidden_states['hk']
@@ -221,7 +223,7 @@ class joint_rbm(nn.Module):
                 else:
                     visible = self.parameters[str(index)]["v_bias"]*input_data[index] - self.parameters[str(index)]["v_bias"]*output_data[index]
                 energy += visible_detection.sum() + visible.sum()
-            return (energy.sum()/batch_size).to('cpu')'''
+            return (energy.sum()/batch_size).to('cpu')
 
     ################################## Update functions ##################################
 
@@ -235,7 +237,7 @@ class joint_rbm(nn.Module):
             tensor hidden_vector : the tensor of the hidden states of a given phase (positive or negative)
             tensor visible_vector : the tensor of the visible states of a given phase (positive or negative)
         '''
-        if self.type=='convolutional':
+        if self.type_of_layer=='convolutional':
             return torch.transpose(F.conv2d(torch.transpose(visible_vector,1,0), torch.transpose(hidden_vector,1,0), dilation = self.filters_parameters[index]['stride']),1,0).sum(0)
         else:
             return torch.mm(hidden_vector.t(),visible_vector).t().sum(0)
@@ -250,8 +252,8 @@ class joint_rbm(nn.Module):
             tensor vector_0 : the tensor of the states of the RBM corresponding to the input data (0 steps of Gibbs sampling ran)
             tensor vector_k : the tensor of the states of the RBM after running k steps of Gibbs sampling.
         '''
-        if self.type=='convolutional':
-            return torch.add(vector_0, -vector_k).sum([0,2,3])/(self.vector_0[1]*self.vector_0[2])
+        if self.type_of_layer=='convolutional':
+            return torch.add(vector_0, -vector_k).sum([0,2,3])/(vector_0.size()[1]*vector_0.size()[2])
         else:
             return torch.add(vector_0, -vector_k).sum(0)
 
@@ -297,16 +299,15 @@ class joint_rbm(nn.Module):
             dictionnary hidden_states : dictionary holding the hidden states given by the visible input data at the key 'h0' and the hidden states that set the visible output data at key 'hk'
             int batch_size : the size of the batch that is currently processed
         '''
-        with torch.no_grad():
-            d_h = self.get_bias_gradient(hidden_states['h0'], hidden_states['hk'])/batch_size
-            self.parameters['h_bias_m']  = torch.add(momentum*self.parameters['h_bias_m'], d_h)
-            self.parameters['h_bias']   += learning_rate*torch.add(d_h,  self.parameters['h_bias_m'])
-            for index in range(self.n_modalities):
-                d_v = self.get_bias_gradient(input_data[index],output_data[index], index)/batch_size
-                dw_in  = self.get_weight_gradient(hidden_states['h0'], input_data[index], index)
-                dw_out = self.get_weight_gradient(hidden_states['hk'], output_data[index], index)
-                d_w  = torch.add(dw_in,-dw_out)/batch_size
-                self.parameters[str(index)]['weights_m'] = torch.add(momentum* self.parameters[str(index)]['weights_m'], d_w)
-                self.parameters[str(index)]['v_bias_m']  = torch.add(momentum* self.parameters[str(index)]['v_bias_m'], d_v)
-                self.parameters[str(index)]['weights']  += learning_rate*(torch.add(d_w, self.parameters[str(index)]['weights_m']))+weight_decay*self.parameters[str(index)]['weights']
-                self.parameters[str(index)]['v_bias']   += learning_rate*torch.add(d_v, self.parameters[str(index)]['v_bias_m'])
+        d_h = self.get_bias_gradient(hidden_states['h0'], hidden_states['hk'])/batch_size
+        self.parameters['h_bias_m']  = torch.add(momentum*self.parameters['h_bias_m'], d_h)
+        self.parameters['h_bias']   += learning_rate*torch.add(d_h,  self.parameters['h_bias_m'])
+        for index in range(self.n_modalities):
+            d_v = self.get_bias_gradient(input_data[index],output_data[index])/batch_size
+            dw_in  = self.get_weight_gradient(hidden_states['h0'], input_data[index], index)
+            dw_out = self.get_weight_gradient(hidden_states['hk'], output_data[index], index)
+            d_w  = torch.add(dw_in,-dw_out)/batch_size
+            self.parameters[str(index)]['weights_m'] = torch.add(momentum* self.parameters[str(index)]['weights_m'], d_w)
+            self.parameters[str(index)]['v_bias_m']  = torch.add(momentum* self.parameters[str(index)]['v_bias_m'], d_v)
+            self.parameters[str(index)]['weights']  += learning_rate*(torch.add(d_w, self.parameters[str(index)]['weights_m']))+weight_decay*self.parameters[str(index)]['weights']
+            self.parameters[str(index)]['v_bias']   += learning_rate*torch.add(d_v, self.parameters[str(index)]['v_bias_m'])

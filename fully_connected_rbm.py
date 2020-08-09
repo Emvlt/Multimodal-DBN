@@ -18,23 +18,23 @@ class fc_rbm(nn.Module):
         Arguments:
             string name : the name of the rbm
             bool gaussian_units : boolean to determine the type of the visible units
-            int visible_units  : integer representing the size of the visible layer
-            int hidden_units : integer representing the size of the hidden layer
+            list visible_units  : list of integesr representing the size of the visible layer
+            list hidden_units : list of integers representing the size of the hidden layer
         '''
         super(fc_rbm, self).__init__()
         self.name          = name
-        self.visible_units = [visible_units]
-        self.hidden_units  = [hidden_units ]
         self.gaussian_units    = gaussian_units
         self.n_modalities    = 1
         self.type = 'fully_connected'
+        self.visible_units = visible_units
+        self.hidden_units  = hidden_units
         self.parameters   = {
-            'h_bias' : nn.Parameter((torch.ones(hidden_units)*-0.004)),
-            'h_bias_m' : nn.Parameter(torch.zeros(hidden_units)),
-            'weights_m' : nn.Parameter(torch.zeros(visible_units, hidden_units)),
-            'v_bias_m'  : nn.Parameter(torch.zeros(visible_units)),
-            'weights' : nn.Parameter((torch.randn(visible_units, hidden_units)*0.001)),
-            'v_bias'  : nn.Parameter((torch.ones(visible_units)*0.001))
+            'h_bias' : nn.Parameter((torch.ones(hidden_units[0])*-4)),
+            'h_bias_m' : nn.Parameter(torch.zeros(hidden_units[0])),
+            'weights_m' : nn.Parameter(torch.zeros((visible_units[0], hidden_units[0]))),
+            'v_bias_m'  : nn.Parameter(torch.zeros(visible_units[0])),
+            'weights' : nn.Parameter((torch.randn((visible_units[0], hidden_units[0]))*0.01)),
+            'v_bias'  : nn.Parameter((torch.ones(visible_units[0])*0.01))
         }
         self.device = 'cpu'
 
@@ -83,8 +83,7 @@ class fc_rbm(nn.Module):
             list of tensors v : the list of tensors is what the joint layer processes. Hence, we want to use only lists.
                 It is relevant to mention that the list of inputs will have a size different to one only when the joint layer is involved.
         '''
-        v = v[0]
-        p_h = F.sigmoid(F.linear(v, self.parameters["weights"].t(), self.parameters['h_bias']))
+        p_h = torch.sigmoid(F.linear(v, self.parameters["weights"].t(), self.parameters['h_bias']))
         return p_h
 
     def get_visible_probability(self, h):
@@ -102,7 +101,7 @@ class fc_rbm(nn.Module):
         if self.gaussian_units:
             return Wh
         else:
-            p_v = F.sigmoid(Wh)
+            p_v = torch.sigmoid(Wh)
             return p_v
 
     ################################## Compuation of the states methods ##################################
@@ -138,7 +137,7 @@ class fc_rbm(nn.Module):
             sample_v = torch.normal(p_v, 1)
         else:
             sample_v = torch.bernoulli(p_v)
-        return [sample_v]
+        return sample_v
 
     ################################## Computation of energy method ##################################
 
@@ -156,11 +155,11 @@ class fc_rbm(nn.Module):
             int batch_size : the size of the batch that is currently processed
         '''
         hidden_term = (-(hidden_states['h0']-hidden_states['hk'])*self.parameters["h_bias"])
-        joint_term  = hidden_states['h0']*F.linear(input_data[0], self.parameters["weights"].t()) - hidden_states['hk']*F.linear(output_data[0], self.parameters["weights"].t())
+        joint_term  = hidden_states['h0']*F.linear(input_data, self.parameters["weights"].t()) - hidden_states['hk']*F.linear(output_data, self.parameters["weights"].t())
         if self.gaussian_units:
-            visible_term = (pow(input_data[0]-self.parameters['v_bias'],2) - pow(output_data[0]-self.parameters['v_bias'],2))/2
+            visible_term = (pow(input_data-self.parameters['v_bias'],2) - pow(output_data-self.parameters['v_bias'],2))/2
         else:
-            visible_term = (input_data[0]-output_data[0])*self.parameters["v_bias"]
+            visible_term = (input_data-output_data)*self.parameters["v_bias"]
         return (-(visible_term.sum((0,1))+ hidden_term.sum((0,1))  + joint_term.sum((0,1)) )/batch_size).to('cpu')
 
     ################################## Gradients computation methods ##################################
@@ -212,7 +211,7 @@ class fc_rbm(nn.Module):
 
     ################################## Update method #################################
 
-    def update_parameters(self, lr, momentum, weight_decay, input_data, output_data, hidden_states, batch_size):
+    def update_parameters(self, learning_rate, momentum, weight_decay, input_data, output_data, hidden_states, batch_size):
         '''
         Description:
             The method to call when updating the parameters of the given layer.
@@ -231,18 +230,17 @@ class fc_rbm(nn.Module):
             dictionnary hidden_states : dictionary holding the hidden states given by the visible input data at the key 'h0' and the hidden states that set the visible output data at key 'hk'
             int batch_size : the size of the batch that is currently processed
         '''
-        d_v = self.get_bias_gradient(input_data[0],output_data[0])/ batch_size
+        d_v = self.get_bias_gradient(input_data,output_data)/ batch_size
         d_h = self.get_bias_gradient(hidden_states['h0'], hidden_states['hk'])/ batch_size
-        dw_in  = self.get_weight_gradient(hidden_states['h0'], input_data[0])
-        dw_out = self.get_weight_gradient(hidden_states['hk'], output_data[0])
+        dw_in  = self.get_weight_gradient(hidden_states['h0'], input_data)
+        dw_out = self.get_weight_gradient(hidden_states['hk'], output_data)
         d_w  = torch.add(dw_in,-dw_out)/batch_size
-        with torch.no_grad():
-            self.parameters['weights_m'] = torch.add(momentum* self.parameters['weights_m'], d_w)
-            self.parameters['v_bias_m']  = torch.add(momentum* self.parameters['v_bias_m'], d_v)
-            self.parameters['weights']  += learning_rate*(torch.add(d_w, self.parameters['weights_m']))+weight_decay*self.parameters['weights']
-            self.parameters['v_bias']   += learning_rate*torch.add(d_v, self.parameters['v_bias_m'])
-            self.parameters['h_bias_m']  = torch.add(momentum*self.parameters['h_bias_m'], d_h)
-            self.parameters['h_bias']   += learning_rate*torch.add(d_h,  self.parameters['h_bias_m'])
+        self.parameters['weights_m'] = torch.add(momentum* self.parameters['weights_m'], d_w)
+        self.parameters['v_bias_m']  = torch.add(momentum* self.parameters['v_bias_m'], d_v)
+        self.parameters['weights']  += learning_rate*(torch.add(d_w, self.parameters['weights_m']))+weight_decay*self.parameters['weights']
+        self.parameters['v_bias']   += learning_rate*torch.add(d_v, self.parameters['v_bias_m'])
+        self.parameters['h_bias_m']  = torch.add(momentum*self.parameters['h_bias_m'], d_h)
+        self.parameters['h_bias']   += learning_rate*torch.add(d_h,  self.parameters['h_bias_m'])
 
     ################################## Inference methods ##################################
 
@@ -271,4 +269,4 @@ class fc_rbm(nn.Module):
             list of tensors input_data : list of visible input data
         '''
         v = self.get_visible_probability(hidden_states)
-        return v[0]
+        return v
